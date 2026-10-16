@@ -1,0 +1,35 @@
+{
+  "sourceCommit": "b8287659fccb4a32616e069861d8bf817ecb7c61",
+  "chainId": 1,
+  "verifiedAtBlock": "26207285",
+  "contracts": [
+    {
+      "name": "SwarmHistory",
+      "address": "0x91e84abf85e52648b96dd96fc0b2d4af57536ec1",
+      "abiHash": "3a7d773289b6528b07648e6cf08ecea7eadda36ab0c06a289be4fca2fe436cc8",
+      "runtimeCodeHash": "0xe423ac1447faffa45008518b8a187bcf19dddd048929f48bbd39aeca60fdb433"
+    },
+    {
+      "name": "IMDenzaField",
+      "address": "0xff04030222eeeb3f7df57628cf2ca96fec85cb76",
+      "abiHash": "292a022d5b9647b29095aaea8d5dabac802f2a4254a8cd6c3df4f7488650a3f9",
+      "runtimeCodeHash": "0x0873ccd98a1fb3e11aebd93aeab2acd4071089cb93c68708352b1cfc8f576bbc"
+    },
+    {
+      "name": "IMDenzaRenderer",
+      "address": "0x27ce1beb376f0868fd8a82f5bd9aff127864ed70",
+      "abiHash": "3a773295fb05d0a83f4daa9e10db14094b3865e9a48fa560e412430451a46cf4",
+      "runtimeCodeHash": "0x54c59ff218319a9797ed8dd4241f623e7abe877d9d8989816c74c184009c95c3"
+    },
+    {
+      "name": "IMDenza",
+      "address": "0xd7fb8c680f9291c0f164c00dc4ae03624a6c76ce",
+      "abiHash": "a9593c48887a50a46b0445202a19073786d29bd333aec5d8f4f2e0032777b521",
+      "runtimeCodeHash": "0x134c0203e1b92a88d549c33372b075e8041e32753915fda91c1f3500df9927bc"
+    }
+  ],
+  "distributor": {
+    "address": "0xb487715681d918415D428D662bF7535336AFa794",
+    "runtimeCodeHash": "0x9017739432a6eb58a43cb57020da76d4c2583c02874016296324dfec487efb5e"
+  }
+}

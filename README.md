@@ -9,6 +9,165 @@ strokes grown along a seeded, noise-perturbed vector field with collision contro
 palettes, scale/turbulence/density variation, accent marks for swarm job categories and faint
 structural traces left by the first swarm jobs.
 
+## Website
+
+The official frontend is in [`web/`](web/). The ready-to-serve production export
+is in [`dist/index.html`](dist/index.html), with its complete local assets.
+It uses React, TypeScript, Vite, wagmi, viem, and one shared wallet connection.
+No contracts were changed or deployed by the website implementation.
+
+### Install, preview, rebuild
+
+Use Node **22.18+** (Node 24 recommended) and npm. From the repository root:
+
+```sh
+npm --prefix web ci
+npm --prefix web run typecheck
+npm --prefix web run build
+npm --prefix web run preview
+```
+
+Open the local URL printed by Vite. `npm --prefix web run dev` starts the source
+development server. The build writes **root `dist/`**, not `web/dist/`. Vite uses
+`base: './'`; all routes use hashes, so the export works at a static gateway
+subpath without server rewrites. Serve the directory over HTTP(S), not `file://`.
+There is no backend, private key, art CDN, or runtime dependency on `.imd/reads/`.
+
+`web/package.json` and `web/package-lock.json` contain the frontend dependencies.
+The Solidity build configuration and dependencies are unchanged. Do not include
+`node_modules`, browser downloads, npm caches, or test scratch output in a
+submission. They are not required to serve `dist/`.
+
+### Pages and live data
+
+| Route | Function |
+| --- | --- |
+| `#/` | Live animated hero, supply, flow-field introduction |
+| `#/gallery` | Minted pieces, collection-wide palette/scale filters, order and token search |
+| `#/piece/1` | Animated SVG, traits, seed/mint hash, contributing jobs, owner, mint transaction, SVG download |
+| `#/mint` | 0.069 IMD public mint and three independent free-claim routes |
+| `#/collection` | Connected wallet’s pieces, pending proceeds/royalties, distribution and claims |
+| `#/system` | Flow fields, historical entropy, foundational jobs and live pulse |
+| `#/about` | Specifications, contracts, source, OpenSea and swarm-job links |
+
+Supply and swarm state refresh every 30 seconds. Foreground artwork queries
+refresh every two minutes. SVGs come from `IMDenza.svg(tokenId)`; traits and mint
+data come from the corresponding collection views. The immediate #1 fallback
+is an actual contract response from block **26207285**, clearly labelled as a
+snapshot until a live read succeeds. No unminted study is presented as a piece.
+The SVG downloads are the original contract output; animation pause and reduced
+motion affect only its display in the site.
+
+On-chain verification during development found **1 minted piece**, **0 recorded
+swarm jobs**, and the correct Identity MD collection configured. The site reads
+current values and explains that history must be explicitly recorded/backfilled;
+it does not claim that the historical ledger is already complete.
+
+Contract addresses and runtime fingerprints are in
+`web/src/generated/deployment.json`. Full ABIs were derived from source commit
+`b8287659fccb4a32616e069861d8bf817ecb7c61` with Solidity 0.8.26. All four canonical
+ABI hashes matched the pinned deployment, and compiled runtime code matched
+the live code outside compiler-declared immutable slots. The derived distributor
+was checked too. The site verifies mainnet and runtime code before enabling
+transactions, then verifies again and simulates each submitted action.
+
+```sh
+npm --prefix web run verify:chain
+```
+
+This performs read-only checks against the delivered fingerprints. The
+`--generate` mode of `web/scripts/verify-chain.mjs` is for contributors with the
+pinned deployment input and Forge artifacts under `test/scratch/forge-out/`;
+it checks the ABI hashes before regenerating them. Ordinary frontend builds
+use the delivered files and do not require Forge or the removed input files.
+
+### Wallets and minting
+
+There is one wagmi configuration and one shared connect sheet. Browser wallets
+are discovered with EIP-6963; the generic browser row is hidden when a named
+provider is found. Mobile visitors get wallet-browser links and Coinbase Smart
+Wallet. The header handles Ethereum switching and wallet management. Disconnect,
+rejection, pending prompts, backdrop dismissal, Escape and focus return are handled.
+
+**WalletConnect support is included but its relay is disabled by default.** No
+project ID was supplied. Following the pinned connector guidance, no borrowed or
+invented ID is embedded. Set a real public `walletConnectProjectId` in
+`web/public/site-config.json` and rebuild to enable its row. For an already built
+export, the equivalent file is `dist/site-config.json`. The site closes its own
+sheet before WalletConnect or Coinbase opens its own authorization interface.
+Browser wallets, mobile wallet-browser links and Coinbase do not require this setting. A project ID is
+public configuration, not a place for a private key.
+
+Public minting reads the selected token’s availability, decimals, price, balance
+and allowance. Approval is exactly **0.069 IMD**, then the user separately confirms
+minting. No ETH mint payment is sent; ETH is only used by the wallet for gas.
+The second IMD token currently has no code; selecting it produces an unavailable
+state instead of a transaction request.
+
+Free claims use the collection’s `holdsImd` and claim flags, plus NFT ownership
+and reuse checks. Identity MD must match
+`0x0000ec93127baa929e58e97dd0095a2bfb38ec1d`. Fidenza must be Art Blocks project 78.
+Automatic NFT discovery checks up to 200 owned NFTs; a verified token-ID form
+handles non-enumerable collections or larger wallets. Each route is independent.
+Use **Refresh eligibility & balance** after changing wallet holdings elsewhere.
+
+The dashboard scans the maximum 3,333 token IDs against `ownerOf` in bounded batches
+at one block. It reads exact `pending(asset, id)` values for IMD A, IMD B, ETH, and
+the collection’s WETH address. **Distribute** allocates newly received funds;
+**Claim** pays the current owner. Claims include at most 80 pieces per transaction.
+The native-ETH zero address is the distributor’s defined asset identifier, never
+a placeholder recipient. Other ERC-20 assets supported by the contract are not
+exposed in this dashboard.
+
+Transactions show their submitted hash and only report success after a successful
+receipt. Replacement/cancellation and rejection are handled. Uncertain submitted
+hashes are retained in session storage across reloads; the status can be rechecked
+or explicitly cleared locally after reviewing the wallet/Explorer transaction.
+
+### Ethereum connection and static configuration
+
+Public reads use the supplied PublicNode RPC, then dRPC. **Connection settings**
+allows an optional HTTPS RPC stored only in the visitor’s browser. Complex SVGs
+can exceed public providers’ `eth_call` gas limits; a provider with a 60M+ call
+allowance may be needed for some pieces. Failed reads have retry controls and do
+not invent traits, supply or balances. Live chain data requires connectivity;
+offline hosting can serve the interface and the explicitly labelled #1 snapshot.
+
+The local 1200 × 630 share card, favicon, fonts, and wallet marks ship in the
+export. `npm --prefix web run share` recreates the share image from the on-chain
+snapshot, using Playwright Chromium. Font and wallet-mark licenses are bundled.
+See [web/NOTICE.md](web/NOTICE.md) for attribution.
+
+### Validation performed
+
+The final production build and standalone TypeScript check passed. A clean npm
+install/rebuild was also checked. Chromium tests passed **14 checks**, with **one
+WebKit check skipped** because required system libraries were unavailable.
+The pinned taste probe passed **16/16 checks**. Eight axe audits reported zero
+violations; 28 page/viewport combinations had no horizontal overflow. The first
+390px screen includes the main action and complete artwork. All seven pages also
+reflowed under 200% CSS text enlargement.
+
+```sh
+cd web
+npm ci
+npx playwright install chromium webkit
+npm test
+```
+
+Tests serve the actual export at `/preview/`. Browser downloads and any host
+libraries are local tooling, not part of the static site. Tests use real read-only
+Ethereum data for the artwork and deployment, and explicitly simulated wallet
+providers/receipts for transaction flows. **No real transaction was signed or
+broadcast.** The live gallery assertions reflect the currently sparse collection;
+chain-dependent checks may need fixture updates as the collection grows.
+
+The WalletConnect relay, real Coinbase/passkey authorization, physical mobile
+wallet apps, screen-reader speech and native browser zoom were not exercised.
+WebKit/Safari behavior remains unverified. Full commands, findings, coverage and
+limitations are in [VALIDATION.md](VALIDATION.md). Implemented design tokens and
+components are documented in [DESIGN.md](DESIGN.md).
+
 ## Contracts (`src/`)
 
 | Contract | Role | Constructor arguments |

@@ -1,0 +1,40 @@
+{
+  "name": "imdenza-website",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test tests/*.test.mjs",
+    "verify:chain": "node scripts/verify-chain.mjs",
+    "share": "node scripts/create-share.mjs"
+  },
+  "dependencies": {
+    "@coinbase/wallet-sdk": "^4.4.0",
+    "@fontsource/dm-sans": "5.2.8",
+    "@fontsource/instrument-serif": "5.2.8",
+    "@tanstack/react-query": "5.90.21",
+    "@wagmi/connectors": "8.2.0",
+    "@walletconnect/ethereum-provider": "^2.26.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "viem": "^2.57.7",
+    "wagmi": "3.7.7"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.4",
+    "playwright": "^1.64.1",
+    "prettier": "^3.9.10",
+    "typescript": "5.9.3",
+    "vite": "7.3.1"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}
