@@ -9,11 +9,10 @@ import {DistributorHandler} from "./DistributorHandler.sol";
 /// @notice Invariants over random call sequences against the value-holding contracts: the
 ///         distributor (ETH, WETH royalties, IMD mint proceeds) and the collection (supply, claim
 ///         limits, uniqueness, proceeds split).
-/// @dev    One property that *should* hold is deliberately absent here because it does not on the
-///         current code: "the sum of pending claims never exceeds the distributor's balance" (and
-///         so "a claim with pending value never reverts"). It fails through dust re-attribution in
-///         `IMDenzaDistributor.distribute`; see `.imd-findings.json` for the failing sequence. The
-///         handler counts those reverts in `blockedClaims` instead of asserting them away.
+/// @dev    WETH is etched at the mainnet address IMDenza syncs before every mint, so the mint-time
+///         attribution path is exercised for all three assets. The handler asserts on the spot that
+///         a claim with pending value never reverts and that `distribute` never reverts once a piece
+///         exists (the dust re-attribution defect of the previous revision is fixed and now pinned).
 /// forge-config: default.invariant.runs = 48
 /// forge-config: default.invariant.depth = 40
 /// forge-config: default.invariant.fail-on-revert = true
@@ -26,7 +25,8 @@ contract DistributorInvariants is BaseTest {
 
     function setUp() public override {
         super.setUp();
-        weth = new MockERC20("WETH", "WETH", 18);
+        vm.etch(nft.WETH(), address(new MockERC20("WETH", "WETH", 18)).code);
+        weth = MockERC20(nft.WETH());
         actors.push(alice);
         actors.push(bob);
         actors.push(carol);
@@ -35,7 +35,7 @@ contract DistributorInvariants is BaseTest {
         handler = new DistributorHandler(nft, imd, weth, actors);
 
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](13);
+        bytes4[] memory selectors = new bytes4[](14);
         selectors[0] = handler.claimImd.selector;
         selectors[1] = handler.publicMint.selector;
         selectors[2] = handler.sendEth.selector;
@@ -49,6 +49,7 @@ contract DistributorInvariants is BaseTest {
         selectors[10] = handler.recordJob.selector;
         selectors[11] = handler.advanceChain.selector;
         selectors[12] = handler.distribute.selector; // weight distribution a little higher
+        selectors[13] = handler.sync.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -137,6 +138,23 @@ contract DistributorInvariants is BaseTest {
             }
             assertEq(dist.pending(a[i], 0), 0, "token 0 pending");
             assertEq(dist.pending(a[i], minted + 1), 0, "unminted token pending");
+        }
+    }
+
+    /// @notice Everything the pieces can claim right now is backed: sum of pending <= reserved <= balance.
+    ///         (Fails on the previous revision's dust re-attribution; pinned here now that it holds.)
+    function invariant_sumOfPendingIsBackedByReserved() public view {
+        address[3] memory a = _assets();
+        uint256 minted = nft.totalMinted();
+        for (uint256 i; i < 3; ++i) {
+            uint256 sum;
+            for (uint256 id = 1; id <= minted; ++id) {
+                sum += dist.pending(a[i], id);
+            }
+            assertLe(sum, dist.reserved(a[i]), "pending exceeds reserved");
+            assertLe(dist.reserved(a[i]), _balance(a[i]), "reserved exceeds balance");
+            // dust locked by rounding is at most one wei per attribution made so far
+            assertLe(dist.reserved(a[i]) - sum, handler.ghostDistributions(a[i]) + minted, "locked dust too large");
         }
     }
 

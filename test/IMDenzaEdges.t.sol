@@ -6,7 +6,7 @@ import {stdStorage, StdStorage} from "forge-std/Test.sol";
 import {IMDenza} from "../src/IMDenza.sol";
 import {IMDenzaDistributor} from "../src/IMDenzaDistributor.sol";
 import {SwarmHistory} from "../src/SwarmHistory.sol";
-import {MockERC20} from "./mocks/Mocks.sol";
+import {MockERC20, MockERC721} from "./mocks/Mocks.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /// @dev ERC-20 that burns 1% of every transfer (fee-on-transfer); used at the IMD token B address.
@@ -33,6 +33,20 @@ contract NoDecimalsToken {
     }
 }
 
+/// @dev Token whose `decimals()` returns a full uint256 (values above 255 are possible).
+contract WideDecimalsToken {
+    mapping(address => uint256) public balanceOf;
+    uint256 public decimals;
+
+    function setDecimals(uint256 d) external {
+        decimals = d;
+    }
+
+    function set(address who, uint256 bal) external {
+        balanceOf[who] = bal;
+    }
+}
+
 /// @dev Contract minter whose ERC-721 receive hook tries to re-enter the collection and the distributor.
 contract ReentrantMinter {
     IMDenza immutable nft;
@@ -43,6 +57,9 @@ contract ReentrantMinter {
     bytes public distributeError;
     bytes public claimPendingError;
     uint256 public hookTokenId;
+    uint256 public distributedInHook;
+    uint256 public reservedInHook;
+    uint256 public distBalanceInHook;
 
     constructor(IMDenza nft_, address token_) {
         nft = nft_;
@@ -63,6 +80,9 @@ contract ReentrantMinter {
         if (!ok) mintError = err;
         (ok, err) = address(dist).call(abi.encodeCall(IMDenzaDistributor.distribute, (token)));
         if (!ok) distributeError = err;
+        else distributedInHook = abi.decode(err, (uint256));
+        reservedInHook = dist.reserved(token);
+        distBalanceInHook = MockERC20(token).balanceOf(address(dist));
         uint256[] memory ids = new uint256[](1);
         ids[0] = tokenId;
         (ok, err) = address(dist).call(abi.encodeCall(IMDenzaDistributor.claim, (token, ids)));
@@ -140,18 +160,24 @@ contract IMDenzaEdgesTest is BaseTest {
 
     // ------------------------------------------------------------ Identity MD
 
+    /// @dev A collection that loses its code after being configured is refused at claim time, the
+    ///      claim is not consumed, and the configurator cannot repoint the route elsewhere.
     function test_identityClaimNeedsCollectionCodeAndExistingToken() public {
-        address dead = makeAddr("empty collection");
         vm.prank(CONFIGURATOR);
-        nft.setIdentityMdCollection(dead);
+        nft.setIdentityMdCollection(address(identity));
+        identity.mint(alice, 1);
+        vm.etch(address(identity), "");
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IMDenza.NoCode.selector, dead));
+        vm.expectRevert(abi.encodeWithSelector(IMDenza.NoCode.selector, address(identity)));
         nft.claimWithIdentityMd(1);
+        assertEq(nft.claimFlags(alice), 0);
+        assertFalse(nft.identityTokenUsed(1));
 
-        // the configurator cannot repoint it to a real collection afterwards
+        // the configurator cannot repoint it to another collection afterwards
+        MockERC721 other = new MockERC721();
         vm.prank(CONFIGURATOR);
         vm.expectRevert(IMDenza.AlreadyConfigured.selector);
-        nft.setIdentityMdCollection(address(identity));
+        nft.setIdentityMdCollection(address(other));
     }
 
     function test_identityClaimForNonexistentTokenRevertsWithoutSideEffects() public {
@@ -236,25 +262,68 @@ contract IMDenzaEdgesTest is BaseTest {
         assertEq(imd.balanceOf(nft.TREASURY()), price / 5);
     }
 
-    function test_publicMintSplitsWhatActuallyArrivesWithFeeOnTransferToken() public {
+    /// @dev A payment token that delivers less than the price (fee on transfer) is refused as a
+    ///      whole: nothing is minted, nothing is split and the payer keeps the full amount.
+    function test_feeOnTransferPaymentIsRefusedAsUnderPaid() public {
         address tokenB = nft.IMD_TOKEN_B();
         vm.etch(tokenB, address(new FeeOnTransferToken()).code);
         FeeOnTransferToken fee = FeeOnTransferToken(tokenB);
         uint256 price = nft.mintPrice(tokenB);
         assertEq(price, 0.069 ether);
-        fee.mint(alice, price);
+        fee.mint(alice, price * 2);
         vm.startPrank(alice);
-        fee.approve(address(nft), price);
-        uint256 id = nft.mint(tokenB);
+        fee.approve(address(nft), price * 2);
+        vm.expectRevert(abi.encodeWithSelector(IMDenza.UnderPaid.selector, price - price / 100, price));
+        nft.mint(tokenB);
         vm.stopPrank();
+        assertEq(nft.totalMinted(), 0);
+        assertEq(fee.balanceOf(alice), price * 2, "revert returns the payment");
+        assertEq(fee.balanceOf(address(nft)), 0);
+        assertEq(fee.balanceOf(nft.TREASURY()), 0);
+        assertEq(fee.balanceOf(address(dist)), 0);
+    }
 
-        uint256 received = price - price / 100;
-        uint256 toHolders = received * 9000 / 10_000;
-        assertEq(fee.balanceOf(address(nft)), 0, "nothing retained");
-        // each onward transfer loses its own 1%, so what lands is 99% of the split
-        assertEq(fee.balanceOf(nft.TREASURY()), (received - toHolders) - (received - toHolders) / 100);
-        assertEq(fee.balanceOf(address(dist)), toHolders - toHolders / 100);
-        assertEq(dist.pending(tokenB, id), toHolders - toHolders / 100);
+    /// @dev `mintPrice` and the IMD holding check accept decimals 3..36 and refuse what lies outside.
+    function test_decimalsBoundariesForPriceAndHolding() public {
+        address tokenB = nft.IMD_TOKEN_B();
+        // 3 decimals: smallest supported, price is 69 units
+        vm.etch(tokenB, address(new MockERC20("IMD", "IMD", 3)).code);
+        assertEq(nft.mintPrice(tokenB), 69);
+        MockERC20(tokenB).mint(alice, 25_000);
+        assertFalse(nft.holdsImd(alice));
+        MockERC20(tokenB).mint(alice, 1);
+        assertTrue(nft.holdsImd(alice));
+
+        // 36 decimals: largest supported for both paths
+        vm.etch(tokenB, address(new MockERC20("IMD", "IMD", 36)).code);
+        assertEq(nft.mintPrice(tokenB), 69 * 10 ** 36 / 1000);
+        MockERC20(tokenB).mint(bob, 25 * 10 ** 36 + 1);
+        assertTrue(nft.holdsImd(bob));
+
+        // 37 decimals: price refused, holding never qualifies, the other token still does
+        vm.etch(tokenB, address(new MockERC20("IMD", "IMD", 37)).code);
+        vm.expectRevert(abi.encodeWithSelector(IMDenza.UnsupportedDecimals.selector, tokenB));
+        nft.mintPrice(tokenB);
+        MockERC20(tokenB).mint(carol, type(uint256).max / 2);
+        assertFalse(nft.holdsImd(carol));
+        _giveImd(carol, 26 ether);
+        assertTrue(nft.holdsImd(carol));
+    }
+
+    /// @dev A `decimals()` that returns a value above uint8 is clamped to 255 and refused on both paths.
+    function test_decimalsAboveUint8AreRefused() public {
+        address tokenB = nft.IMD_TOKEN_B();
+        vm.etch(tokenB, address(new WideDecimalsToken()).code);
+        WideDecimalsToken t = WideDecimalsToken(tokenB);
+        t.setDecimals(300);
+        t.set(alice, type(uint256).max);
+        assertFalse(nft.holdsImd(alice));
+        vm.expectRevert(abi.encodeWithSelector(IMDenza.UnsupportedDecimals.selector, tokenB));
+        nft.mintPrice(tokenB);
+        // and exactly 36 through the wide path still works
+        t.setDecimals(36);
+        assertTrue(nft.holdsImd(alice));
+        assertEq(nft.mintPrice(tokenB), 69 * 10 ** 36 / 1000);
     }
 
     function test_publicMintToContractWithoutReceiverRevertsAndRefunds() public {
@@ -283,8 +352,12 @@ contract IMDenzaEdgesTest is BaseTest {
         // both mint paths share one reentrancy guard
         assertEq(r.claimError(), abi.encodeWithSignature("Error(string)", "ReentrancyGuard: reentrant call"));
         assertEq(r.mintError(), abi.encodeWithSignature("Error(string)", "ReentrancyGuard: reentrant call"));
-        // the payment is still inside the collection during the hook: nothing to distribute or claim yet
-        assertEq(bytes4(r.distributeError()), IMDenzaDistributor.NothingToDistribute.selector);
+        // the payment is still inside the collection during the hook: distribute is a no-op (the
+        // distributor's guard is free again after the pre-mint sync) and there is nothing to claim yet
+        assertEq(r.distributeError().length, 0, "distribute must not revert in the hook");
+        assertEq(r.distributedInHook(), 0);
+        assertEq(r.reservedInHook(), 0);
+        assertEq(r.distBalanceInHook(), 0);
         assertEq(bytes4(r.claimPendingError()), IMDenzaDistributor.NothingToClaim.selector);
         // and the split completed normally afterwards
         assertEq(nft.totalMinted(), 1);
@@ -347,15 +420,53 @@ contract IMDenzaEdgesTest is BaseTest {
         dist.distribute(makeAddr("not a token"));
     }
 
-    function test_ethReceivedBeforeFirstMintBelongsToTheFirstTokens() public {
+    /// @dev ETH that arrives before any piece exists cannot be distributed then; the second mint's
+    ///      pre-mint sync attributes all of it to the only piece that existed, token 1.
+    function test_ethReceivedBeforeFirstMintBelongsToTheFirstTokenAlone() public {
         vm.deal(address(dist), 3 ether);
         vm.expectRevert(IMDenzaDistributor.NoTokensMinted.selector);
         dist.distribute(ETH);
+        uint256 a = _claimImd(alice); // sync sees zero minted: nothing attributed yet
+        assertEq(dist.reserved(ETH), 0);
+        uint256 b = _claimImd(bob); // sync attributes the 3 ETH to token 1 before token 2 exists
+        assertEq(dist.reserved(ETH), 3 ether);
+        assertEq(dist.distribute(ETH), 0, "nothing left to attribute");
+        assertEq(dist.pending(ETH, a), 3 ether);
+        assertEq(dist.pending(ETH, b), 0);
+        assertEq(dist.checkpointCount(ETH), 1);
+        assertEq(dist.checkpointAt(ETH, 0).minted, 1);
+    }
+
+    /// @dev An ERC-20 outside the synced set is only attributed by an explicit `distribute`, so a
+    ///      later piece shares value that arrived before it existed; the synced set never does that.
+    function test_unsyncedTokenIsSharedWithLaterPiecesUntilSomeoneDistributes() public {
+        MockERC20 other = new MockERC20("Other", "OTH", 18);
+        MockERC20 weth = MockERC20(nft.WETH());
+        vm.etch(address(weth), address(new MockERC20("WETH", "WETH", 18)).code);
         uint256 a = _claimImd(alice);
+        other.mint(address(dist), 2 ether);
+        weth.mint(address(dist), 2 ether);
         uint256 b = _claimImd(bob);
-        dist.distribute(ETH);
-        assertEq(dist.pending(ETH, a), 1.5 ether);
-        assertEq(dist.pending(ETH, b), 1.5 ether);
+        dist.distribute(address(other));
+        dist.distribute(address(weth));
+        assertEq(dist.pending(address(other), a), 1 ether);
+        assertEq(dist.pending(address(other), b), 1 ether);
+        assertEq(dist.pending(address(weth), a), 2 ether);
+        assertEq(dist.pending(address(weth), b), 0);
+    }
+
+    /// @dev A balance too large to scale by PRECISION is left unattributed rather than overflowing,
+    ///      and a merely huge balance is attributed in full. (A balance within 1e18 wei below the
+    ///      guard still overflows in the round-up step; see `.imd-findings.json`, informational.)
+    function test_distributeRefusesToOverflowOnAbsurdBalance() public {
+        _claimImd(alice);
+        vm.deal(address(dist), type(uint256).max / dist.PRECISION() + 1);
+        assertEq(dist.distribute(ETH), 0);
+        assertEq(dist.reserved(ETH), 0);
+        assertEq(dist.pending(ETH, 1), 0);
+        vm.deal(address(dist), 1e40);
+        assertEq(dist.distribute(ETH), 1e40);
+        assertEq(dist.pending(ETH, 1), 1e40);
     }
 
     function test_distributionBetweenMintsOfOneHolderIsPerToken() public {
@@ -483,18 +594,43 @@ contract IMDenzaEdgesTest is BaseTest {
         assertEq(swarm.pulse(), 0);
     }
 
-    /// @dev A piece minted *after* a swarm record is bound to that record; the same mint context
-    ///      with a different history produces a different piece (history modulates the art).
+    /// @dev A piece minted in a later block than a swarm record is bound to that record; the same
+    ///      mint context with a different history produces a different piece (history modulates the art).
     function test_swarmHistoryChangesTheSeedOfAnOtherwiseIdenticalMint() public {
+        uint256 snap = vm.snapshotState();
+        vm.roll(block.number + 1);
+        uint256 a = _claimImd(alice);
+        bytes32 hashWithout = nft.tokenData(a).tokenHash;
+        bytes32 seedWithout = nft.seedOf(a);
+        vm.revertToState(snap);
+        swarm.recordJob(bytes32("first"), 0, 1, 1, uint40(block.timestamp));
+        vm.roll(block.number + 1);
+        uint256 b = _claimImd(alice);
+        assertEq(a, b);
+        assertEq(nft.tokenData(b).tokenHash, hashWithout, "same mint context, same token hash");
+        assertTrue(nft.seedOf(b) != seedWithout, "history must change the composition");
+        assertEq(nft.traits(b).jobsTo, 1);
+        assertEq(nft.traits(b).traces, 1);
+    }
+
+    /// @dev The very first record and a mint in the same block: the mint snapshots the empty
+    ///      settled ledger, so recording inside the mint's block (or transaction) changes nothing.
+    function test_mintInTheBlockOfTheFirstRecordSeesEmptyHistory() public {
         uint256 snap = vm.snapshotState();
         uint256 a = _claimImd(alice);
         bytes32 seedWithout = nft.seedOf(a);
         vm.revertToState(snap);
         swarm.recordJob(bytes32("first"), 0, 1, 1, uint40(block.timestamp));
+        assertEq(swarm.jobCount(), 1);
         uint256 b = _claimImd(alice);
-        assertEq(a, b);
-        assertTrue(nft.seedOf(b) != seedWithout);
-        assertEq(nft.traits(b).jobsTo, 1);
-        assertEq(nft.traits(b).traces, 1);
+        assertEq(nft.seedOf(b), seedWithout, "same-block record must not move the seed");
+        assertEq(nft.tokenData(b).swarmEntropy, bytes32(0));
+        assertEq(nft.tokenData(b).swarmJobIndex, 0);
+        assertEq(nft.traits(b).jobsTo, 0);
+        // the next block exposes the record to new mints
+        vm.roll(block.number + 1);
+        uint256 c = _claimImd(bob);
+        assertEq(nft.tokenData(c).swarmJobIndex, 1);
+        assertEq(nft.tokenData(c).swarmEntropy, swarm.entropy());
     }
 }
