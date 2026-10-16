@@ -79,7 +79,8 @@ contract IMDenzaRenderer {
         t.seed = s;
         t.scale = _bucket(_biased(s, e, 0), 35, 70, 92);
         t.turbulence = _bucket(_biased(s, e, 1), 20, 55, 85);
-        t.density = _bucket(_biased(s, e, 2), 30, 75, 101);
+        // Density has three buckets: the top threshold (110 + 10) is above `_biased`'s maximum (119).
+        t.density = _bucket(_biased(s, e, 2), 30, 75, 110);
         uint256 favoured = uint8(e[3]) % 8;
         t.palette = uint8(uint8(s[3]) % 100 < 25 ? favoured : uint8(s[4]) % 8);
         t.outline = uint8(s[5]) % 100 < 35;
@@ -98,7 +99,8 @@ contract IMDenzaRenderer {
     }
 
     function _biased(bytes32 s, bytes32 e, uint256 i) private pure returns (uint256) {
-        // seed byte 0..99, pushed by up to +-10 by the swarm entropy byte at the same index
+        // seed byte 0..99, pushed by up to +-10 by the swarm entropy byte at the same index (0..119
+        // after the +10 offset)
         uint256 v = uint8(s[i]) % 100 + 10;
         return v + uint8(e[i]) % 21 - 10;
     }

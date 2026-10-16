@@ -24,9 +24,12 @@ contract IMDenzaDistributorTest is BaseTest {
         vm.expectRevert(IMDenzaDistributor.NoTokensMinted.selector);
         dist.distribute(ETH);
         _claimImd(alice);
-        dist.distribute(ETH);
-        vm.expectRevert(IMDenzaDistributor.NothingToDistribute.selector);
-        dist.distribute(ETH);
+        assertEq(dist.distribute(ETH), 1 ether);
+        // Nothing new: a no-op that moves neither the accumulator nor `reserved`.
+        uint256 acc = dist.accPerToken(ETH);
+        assertEq(dist.distribute(ETH), 0);
+        assertEq(dist.accPerToken(ETH), acc);
+        assertEq(dist.reserved(ETH), 1 ether);
     }
 
     function test_ethRoyaltiesSplitEquallyAndLaterMintsDoNotShareEarlierValue() public {

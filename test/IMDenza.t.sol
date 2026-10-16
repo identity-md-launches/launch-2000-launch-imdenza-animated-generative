@@ -297,6 +297,11 @@ contract IMDenzaTest is BaseTest {
         uint256 a = _claimImd(alice);
         swarm.recordJob(bytes32("j1"), 0, 2, 1, uint40(block.timestamp));
         swarm.recordJob(bytes32("j2"), 3, 5, 1, uint40(block.timestamp));
+        // Same block as the records: the mint snapshots the ledger as it stood before this block.
+        uint256 sameBlock = _claimImd(carol);
+        assertEq(nft.tokenData(sameBlock).swarmJobIndex, 0);
+        assertEq(nft.tokenData(sameBlock).swarmEntropy, bytes32(0));
+        vm.roll(block.number + 1);
         uint256 b = _claimImd(bob);
         IMDenza.TokenData memory da = nft.tokenData(a);
         IMDenza.TokenData memory db = nft.tokenData(b);
@@ -392,6 +397,7 @@ contract IMDenzaTest is BaseTest {
         for (uint256 i; i < 3; ++i) {
             swarm.recordJob(bytes32(i + 1), uint8(i), 2, 1, uint40(block.timestamp));
         }
+        vm.roll(block.number + 1); // records count for mints from the next block on
         uint256 id = _claimImd(alice);
         string memory uri = nft.tokenURI(id);
         assertEq(_prefix(uri, 29), "data:application/json;base64,");
@@ -405,7 +411,7 @@ contract IMDenzaTest is BaseTest {
         assertEq(t.accents, 3);
         assertTrue(t.scale <= 3 && t.turbulence <= 3 && t.density <= 2 && t.palette <= 7);
         assertEq(t.pulse, swarm.pulse());
-        assertEq(t.pulseInfluence, 30);
+        assertEq(t.pulseInfluence, 29); // 300_000 minus one block of decay
     }
 
     function _prefix(string memory s, uint256 n) internal pure returns (string memory out) {

@@ -104,6 +104,12 @@ contract SwarmHistoryTest is Test {
         vm.expectRevert(SwarmHistory.IndexOutOfRange.selector);
         swarm.digestAt(20);
         (bytes32 e, uint256 n, uint64 p) = swarm.snapshot();
+        // Records of the current block are not in the snapshot yet.
+        assertEq(e, bytes32(0));
+        assertEq(n, 0);
+        assertEq(p, 0);
+        vm.roll(block.number + 1);
+        (e, n, p) = swarm.snapshot();
         assertEq(e, swarm.entropy());
         assertEq(n, 20);
         assertEq(p, profile);

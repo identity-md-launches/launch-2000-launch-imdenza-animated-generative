@@ -21,7 +21,7 @@ contract SwarmHistory {
     uint256 public constant PULSE_MAX = 1_000_000;
     /// @notice Pulse added per recorded job (10% of the scale).
     uint256 public constant PULSE_PER_JOB = 100_000;
-    /// @notice Pulse decay per block: a saturated pulse returns to idle in ~7200 blocks (~1 day).
+    /// @notice Pulse decay per block (138, floored): a saturated pulse returns to idle in 7247 blocks (~1 day).
     uint256 public constant PULSE_DECAY_PER_BLOCK = PULSE_MAX / 7200;
     /// @notice Maximum records per batch call.
     uint256 public constant MAX_BATCH = 200;
@@ -97,6 +97,14 @@ contract SwarmHistory {
     uint256 private _pulseLevel;
     uint256 private _pulseBlock;
 
+    /// @dev State as it stood at the end of the last block before `_lastRecordBlock`. A mint in the
+    ///      same block as a record snapshots this settled state, so a minter cannot reroll its own
+    ///      composition by recording jobs inside its mint transaction.
+    uint256 private _lastRecordBlock;
+    bytes32 private _settledEntropy;
+    uint256 private _settledJobCount;
+    uint64 private _settledProfile;
+
     /// @notice Append one job record.
     /// @param jobId        Unique identifier of the swarm job (e.g. keccak of its id string).
     /// @param jobType      Category, see `JobType`.
@@ -139,6 +147,13 @@ contract SwarmHistory {
         if (jobTimestamp > block.timestamp) revert FutureTimestamp();
         if (isRecorded[jobId]) revert JobAlreadyRecorded(jobId);
         isRecorded[jobId] = true;
+
+        if (_lastRecordBlock != block.number) {
+            _settledEntropy = entropy;
+            _settledJobCount = jobCount;
+            _settledProfile = typeProfile();
+            _lastRecordBlock = block.number;
+        }
 
         index = jobCount;
         bytes32 digest = keccak256(
@@ -199,8 +214,10 @@ contract SwarmHistory {
         }
     }
 
-    /// @notice Everything a mint snapshots, in one call.
+    /// @notice Everything a mint snapshots, in one call: the ledger as it stood at the end of the
+    ///         previous block. Records made in the current block only count from the next block on.
     function snapshot() external view returns (bytes32 entropy_, uint256 jobCount_, uint64 profile) {
+        if (_lastRecordBlock == block.number) return (_settledEntropy, _settledJobCount, _settledProfile);
         entropy_ = entropy;
         jobCount_ = jobCount;
         profile = typeProfile();

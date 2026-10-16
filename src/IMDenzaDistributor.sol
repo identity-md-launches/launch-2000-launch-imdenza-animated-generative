@@ -33,7 +33,6 @@ contract IMDenzaDistributor is ReentrancyGuard {
     }
 
     error OnlyNft();
-    error NothingToDistribute();
     error NoTokensMinted();
     error NothingToClaim();
     error EthTransferFailed();
@@ -48,11 +47,12 @@ contract IMDenzaDistributor is ReentrancyGuard {
 
     /// @notice asset => accumulated value per token (scaled by PRECISION).
     mapping(address => uint256) public accPerToken;
-    /// @notice asset => value already attributed to accumulators but not yet claimed (plus dust).
+    /// @notice asset => value backing the accumulators that has not been claimed yet. It covers every
+    ///         acc unit credited (rounded up per distribution), so claims can never exceed it.
     mapping(address => uint256) public reserved;
     /// @notice asset => checkpoints, strictly increasing by `minted`.
     mapping(address => Checkpoint[]) private _checkpoints;
-    /// @notice asset => tokenId => total claimed so far (scaled by PRECISION, i.e. acc units).
+    /// @notice asset => tokenId => acc units already paid out (always whole wei times PRECISION).
     mapping(address => mapping(uint256 => uint256)) public claimedAcc;
 
     constructor() {
@@ -63,21 +63,54 @@ contract IMDenzaDistributor is ReentrancyGuard {
     receive() external payable {}
 
     /// @notice Attribute any unattributed balance of `asset` to the tokens minted so far.
-    ///         Permissionless: anyone may call it after sending value here.
+    ///         Permissionless: anyone may call it after sending value here. A call with nothing new
+    ///         to attribute (or less than one acc unit per token) changes nothing and returns 0.
     /// @param asset ERC-20 address, or `ETH` (zero address) for native ETH.
-    function distribute(address asset) external nonReentrant {
+    /// @return amount Value newly reserved for holders.
+    function distribute(address asset) external nonReentrant returns (uint256 amount) {
         uint256 minted = nft.totalMinted();
         if (minted == 0) revert NoTokensMinted();
         uint256 balance = asset == ETH ? address(this).balance : IERC20(asset).balanceOf(address(this));
-        uint256 unattributed = balance - reserved[asset];
-        if (unattributed == 0) revert NothingToDistribute();
+        amount = _attribute(asset, balance, minted);
+    }
 
+    /// @notice Attribute the pending balance of each of `assets` to the tokens minted so far,
+    ///         skipping any asset it cannot read. IMDenza calls this before every mint so value that
+    ///         arrived earlier is never shared with the piece being minted. Permissionless.
+    function sync(address[] calldata assets) external nonReentrant {
+        uint256 minted = nft.totalMinted();
+        if (minted == 0) return;
+        for (uint256 i; i < assets.length; ++i) {
+            address asset = assets[i];
+            uint256 balance;
+            if (asset == ETH) {
+                balance = address(this).balance;
+            } else {
+                if (asset.code.length == 0) continue;
+                (bool ok, bytes memory data) =
+                    asset.staticcall(abi.encodeWithSelector(IERC20.balanceOf.selector, address(this)));
+                if (!ok || data.length < 32) continue;
+                balance = abi.decode(data, (uint256));
+            }
+            _attribute(asset, balance, minted);
+        }
+    }
+
+    /// @dev Credits `perToken` acc units to each of the `minted` tokens and reserves the wei that
+    ///      backs them, rounded up (never more than the unattributed balance). Whatever is not
+    ///      reserved stays unattributed and joins the next distribution, so a call with no new
+    ///      value is a no-op and the accumulators never promise more than `reserved`.
+    function _attribute(address asset, uint256 balance, uint256 minted) private returns (uint256 amount) {
+        uint256 held = reserved[asset];
+        if (balance <= held) return 0;
+        uint256 unattributed = balance - held;
+        if (unattributed > type(uint256).max / PRECISION) return 0;
         uint256 perToken = (unattributed * PRECISION) / minted;
-        uint256 attributed = (perToken * minted) / PRECISION;
+        if (perToken == 0) return 0;
+        amount = (perToken * minted + PRECISION - 1) / PRECISION;
+        reserved[asset] = held + amount;
         uint256 acc = accPerToken[asset] + perToken;
         accPerToken[asset] = acc;
-        // Dust below one acc unit per token stays unattributed and joins the next distribution.
-        reserved[asset] += attributed;
 
         Checkpoint[] storage cps = _checkpoints[asset];
         uint256 n = cps.length;
@@ -86,27 +119,27 @@ contract IMDenzaDistributor is ReentrancyGuard {
         } else {
             cps.push(Checkpoint({minted: minted, acc: acc}));
         }
-        emit Distributed(asset, attributed, minted);
+        emit Distributed(asset, amount, minted);
     }
 
     /// @notice Pay the pending `asset` share of `tokenIds` to their owner. All ids must share one
-    ///         owner. Anyone may call; payment always goes to the current owner.
+    ///         owner. Anyone may call; payment always goes to the current owner. Each token is paid
+    ///         its whole-wei share; the fraction below one wei stays credited to it.
     function claim(address asset, uint256[] calldata tokenIds) external nonReentrant returns (uint256 amount) {
         if (tokenIds.length == 0) revert EmptyClaim();
         address to = nft.ownerOf(tokenIds[0]);
         uint256 acc = accPerToken[asset];
-        uint256 totalAccUnits;
         for (uint256 i; i < tokenIds.length; ++i) {
             uint256 id = tokenIds[i];
             if (i != 0 && nft.ownerOf(id) != to) revert NotOwnerOfAll();
             uint256 earned = acc - _accBefore(asset, id);
-            uint256 owed = earned - claimedAcc[asset][id];
+            uint256 paid = claimedAcc[asset][id];
+            uint256 owed = (earned - paid) / PRECISION;
             if (owed != 0) {
-                claimedAcc[asset][id] = earned;
-                totalAccUnits += owed;
+                claimedAcc[asset][id] = paid + owed * PRECISION;
+                amount += owed;
             }
         }
-        amount = totalAccUnits / PRECISION;
         if (amount == 0) revert NothingToClaim();
         reserved[asset] -= amount;
         emit Claimed(asset, to, amount, tokenIds);

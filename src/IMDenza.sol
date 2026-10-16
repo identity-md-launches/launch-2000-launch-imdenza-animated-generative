@@ -60,6 +60,12 @@ contract IMDenza is ERC721C, IERC2981, ReentrancyGuard {
     uint8 public constant TRANSFER_SECURITY_LEVEL = 3;
     /// @notice Limit Break's default operator whitelist (list id 0) on the default validator.
     uint120 public constant OPERATOR_WHITELIST_ID = 0;
+    /// @notice Canonical mainnet WETH (royalties on WETH sales). Attributed to holders before every mint.
+    address public constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    /// @notice Accepted `decimals()` range for paying in an IMD token (below 3 the 0.069 price truncates);
+    ///         the holding check only refuses more than `MAX_IMD_DECIMALS`.
+    uint8 public constant MIN_IMD_DECIMALS = 3;
+    uint8 public constant MAX_IMD_DECIMALS = 36;
 
     uint8 private constant CLAIM_IDENTITY = 1;
     uint8 private constant CLAIM_IMD = 2;
@@ -122,6 +128,10 @@ contract IMDenza is ERC721C, IERC2981, ReentrancyGuard {
     error NoCode(address target);
     error NoOwner();
     error NonexistentToken();
+    error NotErc721(address collection);
+    error InvalidCollection();
+    error UnsupportedDecimals(address token);
+    error UnderPaid(uint256 received, uint256 price);
 
     // ------------------------------------------------------------ constructor
 
@@ -138,13 +148,26 @@ contract IMDenza is ERC721C, IERC2981, ReentrancyGuard {
 
     // ------------------------------------------------------------ configuration
 
-    /// @notice One-shot: set the Identity MD NFT collection used by `claimWithIdentityMd`.
+    /// @notice One-shot: set the Identity MD NFT collection used by `claimWithIdentityMd`. It must be
+    ///         a deployed ERC-721 (ERC-165) other than this collection, its distributor or Art Blocks.
     function setIdentityMdCollection(address collection) external {
         if (msg.sender != configurator) revert NotConfigurator();
         if (identityMdCollection != address(0)) revert AlreadyConfigured();
         if (collection == address(0)) revert ZeroAddress();
+        if (collection == address(this) || collection == address(distributor) || collection == ART_BLOCKS) {
+            revert InvalidCollection();
+        }
+        if (collection.code.length == 0) revert NoCode(collection);
+        if (!_isErc721(collection)) revert NotErc721(collection);
         identityMdCollection = collection;
         emit IdentityMdCollectionSet(collection);
+    }
+
+    function _isErc721(address collection) private view returns (bool) {
+        (bool ok, bytes memory data) = collection.staticcall{gas: 30_000}(
+            abi.encodeWithSelector(IERC165.supportsInterface.selector, type(IERC721).interfaceId)
+        );
+        return ok && data.length >= 32 && abi.decode(data, (bool));
     }
 
     /// @notice Apply the fixed ERC721C security policy on the transfer validator so marketplaces
@@ -234,13 +257,18 @@ contract IMDenza is ERC721C, IERC2981, ReentrancyGuard {
         (bool ok, bytes memory data) = token.staticcall(abi.encodeWithSelector(IERC20.balanceOf.selector, account));
         if (!ok || data.length < 32) return false;
         uint256 balance = abi.decode(data, (uint256));
-        return balance > IMD_HOLDING_WHOLE * 10 ** _decimals(token);
+        uint8 dec = _decimals(token);
+        // 25 whole tokens is exact for any decimals; only an overflowing exponent is refused.
+        if (dec > MAX_IMD_DECIMALS) return false;
+        return balance > IMD_HOLDING_WHOLE * 10 ** dec;
     }
 
     function _decimals(address token) private view returns (uint8) {
         (bool ok, bytes memory data) = token.staticcall(abi.encodeWithSelector(IERC20Metadata.decimals.selector));
         if (!ok || data.length < 32) return 18;
-        return abi.decode(data, (uint8));
+        uint256 dec = abi.decode(data, (uint256));
+        // Out-of-range values map to 255, which the callers refuse.
+        return dec > type(uint8).max ? type(uint8).max : uint8(dec);
     }
 
     // ------------------------------------------------------------ public mint
@@ -248,7 +276,9 @@ contract IMDenza is ERC721C, IERC2981, ReentrancyGuard {
     /// @notice Current public mint price in `paymentToken` units (0.069 IMD).
     function mintPrice(address paymentToken) public view returns (uint256) {
         if (paymentToken != IMD_TOKEN_A && paymentToken != IMD_TOKEN_B) revert UnsupportedPaymentToken();
-        return MINT_PRICE_MILLI * 10 ** _decimals(paymentToken) / 1000;
+        uint8 dec = _decimals(paymentToken);
+        if (dec < MIN_IMD_DECIMALS || dec > MAX_IMD_DECIMALS) revert UnsupportedDecimals(paymentToken);
+        return MINT_PRICE_MILLI * 10 ** dec / 1000;
     }
 
     /// @notice Public mint, paid in IMD. 90% of what arrives goes to holders, 10% to the treasury.
@@ -260,6 +290,7 @@ contract IMDenza is ERC721C, IERC2981, ReentrancyGuard {
         uint256 before = token.balanceOf(address(this));
         token.safeTransferFrom(msg.sender, address(this), price);
         uint256 received = token.balanceOf(address(this)) - before;
+        if (received < price) revert UnderPaid(received, price);
 
         tokenId = _mintTo(msg.sender, 0);
 
@@ -277,6 +308,9 @@ contract IMDenza is ERC721C, IERC2981, ReentrancyGuard {
 
     function _mintTo(address to, uint8 route) private returns (uint256 tokenId) {
         if (totalMinted >= MAX_SUPPLY) revert SoldOut();
+        // Attribute royalties and proceeds that arrived earlier to the pieces that existed then,
+        // before this piece joins the holder set.
+        distributor.sync(_syncAssets());
         tokenId = ++totalMinted;
 
         if (!transferPolicyApplied) _applyTransferPolicy(false);
@@ -306,6 +340,15 @@ contract IMDenza is ERC721C, IERC2981, ReentrancyGuard {
         });
         emit Minted(tokenId, to, h, entropy, jobCount, route);
         _safeMint(to, tokenId);
+    }
+
+    /// @dev Assets attributed before every mint: ETH, both IMD tokens and WETH.
+    function _syncAssets() private pure returns (address[] memory assets) {
+        assets = new address[](4);
+        assets[0] = address(0);
+        assets[1] = IMD_TOKEN_A;
+        assets[2] = IMD_TOKEN_B;
+        assets[3] = WETH;
     }
 
     // ------------------------------------------------------------ views

@@ -112,3 +112,45 @@ contract ReentrantClaimer {
         return this.onERC721Received.selector;
     }
 }
+
+/// @dev ERC-20 whose transferFrom reports success without moving anything.
+contract LazyERC20 {
+    function decimals() external pure returns (uint8) {
+        return 18;
+    }
+
+    function balanceOf(address) external pure returns (uint256) {
+        return 0;
+    }
+
+    function transferFrom(address, address, uint256) external pure returns (bool) {
+        return true;
+    }
+
+    function transfer(address, uint256) external pure returns (bool) {
+        return true;
+    }
+}
+
+/// @dev Holder contract that tries to mint from inside a distributor ETH payout.
+contract MintOnPayout {
+    address public nft;
+    bool public attempted;
+    bool public mintFailed;
+
+    function setNft(address nft_) external {
+        nft = nft_;
+    }
+
+    receive() external payable {
+        if (!attempted) {
+            attempted = true;
+            (bool ok,) = nft.call(abi.encodeWithSignature("claimWithImd()"));
+            mintFailed = !ok;
+        }
+    }
+
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return this.onERC721Received.selector;
+    }
+}
