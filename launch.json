@@ -1,0 +1,29 @@
+{
+  "kind": "evm_contracts",
+  "contracts": [
+    {
+      "contract": "SwarmHistory",
+      "constructorArgs": []
+    },
+    {
+      "contract": "IMDenzaField",
+      "constructorArgs": []
+    },
+    {
+      "contract": "IMDenzaRenderer",
+      "constructorArgs": [
+        "$contract:SwarmHistory",
+        "$contract:IMDenzaField"
+      ]
+    },
+    {
+      "contract": "IMDenza",
+      "constructorArgs": [
+        "$owner",
+        "$contract:IMDenzaRenderer",
+        "$contract:SwarmHistory"
+      ]
+    }
+  ],
+  "notes": "IMDenza: 3333 fully on-chain animated generative flow-field NFTs (ERC721C, Limit Break creator-token-standards v4.0.1) on Ethereum mainnet, name IMDenza, symbol IMDENZA. Deployment order and arguments follow the accepted source. SwarmHistory (no arguments) is the permissionless, append-only commitment of IMD swarm job history: anyone records jobs (unique id, category 0-7, agent count, outcome, timestamp) which fold into a rolling entropy hash, category counters and a decaying activity pulse; the first 16 records are foundational and leave low-opacity structural traces in later pieces. IMDenzaField (no arguments) is the pure seeded flow-field tracer with 96x96 collision grid that writes the SVG stroke elements. IMDenzaRenderer(swarm, field) derives traits (scale, turbulence, density, palette family, collision mode, outline, base angle, accents, traces, contributing job range, pulse influence), palettes, CSS keyframe animation (flow, breathing, density fade, hue/saturation drift, pulse) and base64 JSON metadata; it reads SwarmHistory and IMDenzaField by address, so both are earlier contracts. IMDenza(configurator, renderer, swarm) is the ERC721C collection: supply hard-capped at 3333; free on-chain-checked claims of one per wallet for Identity MD NFT holders, for wallets holding more than 25 IMD (0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7 or 0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127, checked for code on use), and for holders of an Art Blocks Fidenza (0xa7d8d9ef8d8ce8992df33d8b8cf4aebabd5bd270, project 78); public mint at 0.069 IMD paid by transferFrom with 90% of received proceeds sent to the holder distributor and 10% to the treasury 0xc3F0dEC012784f6d7178104C31A4611c6897756c; token hash from the mint transaction context, composition seed keccak256(tokenHash, swarmEntropy, tokenId) with reused hashes and seeds rejected so every token is unique; royaltyInfo returns 6.9% to the distributor; applyTransferPolicy() permissionlessly sets security level 3 / list 0 on Limit Break's default validator. Its constructor creates IMDenzaDistributor (address via IMDenza.distributor()), which attributes ETH and ERC-20 balances pro-rata to tokens minted so far via permissionless distribute(asset) and pays current owners via claim(asset, tokenIds); no admin can redirect funds. The first argument of IMDenza is the configurator, filled by $owner (0x3d6a89c8751a45dd577a4c1f3b34e71c58236193): its only power is to set the Identity MD NFT collection address once via setIdentityMdCollection, because the brief named that collection without an address. No contract exposes owner(); there is no pause, upgrade, discretionary mint, fee change or fund sweep. All constructors are nonpayable and make no external calls, so they succeed on an empty chain; after launch anyone may back-fill swarm history with recordJobs, call applyTransferPolicy() and call distribute(asset) as royalties arrive."
+}
